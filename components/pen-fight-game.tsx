@@ -121,7 +121,9 @@ export default function PenFightGame() {
     const dx = pen1.x - pen2.x
     const dy = pen1.y - pen2.y
     const distance = Math.sqrt(dx * dx + dy * dy)
-    return distance < (pen1.width + pen2.width) / 3
+    // Use a radius that makes sense for pen-shaped objects
+    const collisionRadius = (pen1.width / 2 + pen2.width / 2) * 0.6
+    return distance < collisionRadius
   }
 
   const resolveCollision = (pen1: Pen, pen2: Pen): void => {
@@ -129,32 +131,53 @@ export default function PenFightGame() {
     const dy = pen2.y - pen1.y
     const distance = Math.sqrt(dx * dx + dy * dy)
     
-    if (distance === 0) return
+    if (distance === 0) {
+      // Pens are exactly on top of each other, push them apart randomly
+      pen2.x += 5
+      pen2.y += 5
+      return
+    }
     
+    // Collision radius
+    const collisionRadius = (pen1.width / 2 + pen2.width / 2) * 0.6
+    
+    // Normal vector from pen1 to pen2
     const nx = dx / distance
     const ny = dy / distance
     
-    const relVx = pen1.vx - pen2.vx
-    const relVy = pen1.vy - pen2.vy
-    const relVn = relVx * nx + relVy * ny
+    // Tangent vector (perpendicular to normal)
+    const tx = -ny
+    const ty = nx
     
-    if (relVn > 0) return
+    // Project velocities onto normal and tangent
+    const v1n = pen1.vx * nx + pen1.vy * ny
+    const v1t = pen1.vx * tx + pen1.vy * ty
+    const v2n = pen2.vx * nx + pen2.vy * ny
+    const v2t = pen2.vx * tx + pen2.vy * ty
     
-    const restitution = 0.8
-    const impulse = -(1 + restitution) * relVn / 2
+    // For elastic collision with equal masses, normal components are swapped
+    // Tangent components stay the same (no friction)
+    const restitution = 0.85
     
-    pen1.vx += impulse * nx
-    pen1.vy += impulse * ny
-    pen2.vx -= impulse * nx
-    pen2.vy -= impulse * ny
+    // New normal velocities (1D elastic collision formula for equal masses)
+    const v1nNew = v2n * restitution
+    const v2nNew = v1n * restitution
+    
+    // Convert back to x,y velocities
+    pen1.vx = v1nNew * nx + v1t * tx
+    pen1.vy = v1nNew * ny + v1t * ty
+    pen2.vx = v2nNew * nx + v2t * tx
+    pen2.vy = v2nNew * ny + v2t * ty
     
     // Separate pens to prevent overlap
-    const overlap = (pen1.width + pen2.width) / 3 - distance
+    const overlap = collisionRadius - distance
     if (overlap > 0) {
-      pen1.x -= nx * overlap / 2
-      pen1.y -= ny * overlap / 2
-      pen2.x += nx * overlap / 2
-      pen2.y += ny * overlap / 2
+      const separationX = nx * (overlap / 2 + 2)
+      const separationY = ny * (overlap / 2 + 2)
+      pen1.x -= separationX
+      pen1.y -= separationY
+      pen2.x += separationX
+      pen2.y += separationY
     }
   }
 
@@ -174,8 +197,8 @@ export default function PenFightGame() {
     const angle = Math.atan2(dy, dx)
     
     // Add some randomness to make AI beatable
-    const randomAngle = angle + (Math.random() - 0.5) * 0.5
-    const power = 10 + Math.random() * 12
+    const randomAngle = angle + (Math.random() - 0.5) * 0.4
+    const power = 12 + Math.random() * 10
     
     physics.aiPen.vx = Math.cos(randomAngle) * power
     physics.aiPen.vy = Math.sin(randomAngle) * power
