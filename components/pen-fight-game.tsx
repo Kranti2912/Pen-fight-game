@@ -16,18 +16,22 @@ interface Pen {
   capColor: string
 }
 
-interface GameState {
+interface GamePhysicsState {
   playerPen: Pen
   aiPen: Pen
   isPlayerTurn: boolean
-  isDragging: boolean
-  dragStart: { x: number; y: number } | null
-  dragEnd: { x: number; y: number } | null
+  waitingForPensToStop: boolean
+  aiHasMoved: boolean
+}
+
+interface GameUIState {
+  isPlayerTurn: boolean
   gameOver: boolean
   winner: "player" | "ai" | null
   playerScore: number
   aiScore: number
   roundOver: boolean
+  showInstructions: boolean
 }
 
 const CANVAS_WIDTH = 600
@@ -39,81 +43,70 @@ const MAX_FLICK_POWER = 25
 const PEN_WIDTH = 80
 const PEN_HEIGHT = 14
 
+function createInitialPens(): { playerPen: Pen; aiPen: Pen } {
+  return {
+    playerPen: {
+      x: CANVAS_WIDTH / 2,
+      y: CANVAS_HEIGHT - TABLE_PADDING - 80,
+      vx: 0,
+      vy: 0,
+      angle: 0,
+      width: PEN_WIDTH,
+      height: PEN_HEIGHT,
+      color: "#3b82f6",
+      capColor: "#1d4ed8",
+    },
+    aiPen: {
+      x: CANVAS_WIDTH / 2,
+      y: TABLE_PADDING + 80,
+      vx: 0,
+      vy: 0,
+      angle: Math.PI,
+      width: PEN_WIDTH,
+      height: PEN_HEIGHT,
+      color: "#ef4444",
+      capColor: "#b91c1c",
+    },
+  }
+}
+
 export default function PenFightGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animationRef = useRef<number | null>(null)
-  const [gameState, setGameState] = useState<GameState>(() => createInitialState())
-  const [showInstructions, setShowInstructions] = useState(true)
-  const gameStateRef = useRef<GameState>(gameState)
   
-  // Keep ref in sync with state
-  useEffect(() => {
-    gameStateRef.current = gameState
-  }, [gameState])
-
-  function createInitialState(): GameState {
-    return {
-      playerPen: {
-        x: CANVAS_WIDTH / 2,
-        y: CANVAS_HEIGHT - TABLE_PADDING - 80,
-        vx: 0,
-        vy: 0,
-        angle: 0,
-        width: PEN_WIDTH,
-        height: PEN_HEIGHT,
-        color: "#3b82f6",
-        capColor: "#1d4ed8",
-      },
-      aiPen: {
-        x: CANVAS_WIDTH / 2,
-        y: TABLE_PADDING + 80,
-        vx: 0,
-        vy: 0,
-        angle: Math.PI,
-        width: PEN_WIDTH,
-        height: PEN_HEIGHT,
-        color: "#ef4444",
-        capColor: "#b91c1c",
-      },
-      isPlayerTurn: true,
-      isDragging: false,
-      dragStart: null,
-      dragEnd: null,
-      gameOver: false,
-      winner: null,
-      playerScore: 0,
-      aiScore: 0,
-      roundOver: false,
-    }
-  }
-
-  const resetRound = useCallback(() => {
-    setGameState((prev) => ({
-      ...prev,
-      playerPen: {
-        ...prev.playerPen,
-        x: CANVAS_WIDTH / 2,
-        y: CANVAS_HEIGHT - TABLE_PADDING - 80,
-        vx: 0,
-        vy: 0,
-        angle: 0,
-      },
-      aiPen: {
-        ...prev.aiPen,
-        x: CANVAS_WIDTH / 2,
-        y: TABLE_PADDING + 80,
-        vx: 0,
-        vy: 0,
-        angle: Math.PI,
-      },
-      isPlayerTurn: true,
-      roundOver: false,
-    }))
-  }, [])
-
-  const resetGame = useCallback(() => {
-    setGameState(createInitialState())
-  }, [])
+  // UI state (for React rendering)
+  const [uiState, setUIState] = useState<GameUIState>({
+    isPlayerTurn: true,
+    gameOver: false,
+    winner: null,
+    playerScore: 0,
+    aiScore: 0,
+    roundOver: false,
+    showInstructions: true,
+  })
+  
+  // Physics state (stored in ref for game loop performance)
+  const physicsRef = useRef<GamePhysicsState>({
+    ...createInitialPens(),
+    isPlayerTurn: true,
+    waitingForPensToStop: false,
+    aiHasMoved: false,
+  })
+  
+  // Drag state
+  const dragRef = useRef<{
+    isDragging: boolean
+    startX: number
+    startY: number
+    endX: number
+    endY: number
+  }>({
+    isDragging: false,
+    startX: 0,
+    startY: 0,
+    endX: 0,
+    endY: 0,
+  })
 
   const isPenOnTable = (pen: Pen): boolean => {
     return (
@@ -131,12 +124,12 @@ export default function PenFightGame() {
     return distance < (pen1.width + pen2.width) / 3
   }
 
-  const resolveCollision = (pen1: Pen, pen2: Pen): [Pen, Pen] => {
+  const resolveCollision = (pen1: Pen, pen2: Pen): void => {
     const dx = pen2.x - pen1.x
     const dy = pen2.y - pen1.y
     const distance = Math.sqrt(dx * dx + dy * dy)
     
-    if (distance === 0) return [pen1, pen2]
+    if (distance === 0) return
     
     const nx = dx / distance
     const ny = dy / distance
@@ -145,61 +138,86 @@ export default function PenFightGame() {
     const relVy = pen1.vy - pen2.vy
     const relVn = relVx * nx + relVy * ny
     
-    if (relVn > 0) return [pen1, pen2]
+    if (relVn > 0) return
     
     const restitution = 0.8
     const impulse = -(1 + restitution) * relVn / 2
     
-    return [
-      {
-        ...pen1,
-        vx: pen1.vx + impulse * nx,
-        vy: pen1.vy + impulse * ny,
-      },
-      {
-        ...pen2,
-        vx: pen2.vx - impulse * nx,
-        vy: pen2.vy - impulse * ny,
-      },
-    ]
+    pen1.vx += impulse * nx
+    pen1.vy += impulse * ny
+    pen2.vx -= impulse * nx
+    pen2.vy -= impulse * ny
+    
+    // Separate pens to prevent overlap
+    const overlap = (pen1.width + pen2.width) / 3 - distance
+    if (overlap > 0) {
+      pen1.x -= nx * overlap / 2
+      pen1.y -= ny * overlap / 2
+      pen2.x += nx * overlap / 2
+      pen2.y += ny * overlap / 2
+    }
   }
 
-  const arePensMoving = (playerPen: Pen, aiPen: Pen): boolean => {
+  const arePensMoving = (): boolean => {
+    const { playerPen, aiPen } = physicsRef.current
     const playerMoving = Math.abs(playerPen.vx) > MIN_VELOCITY || Math.abs(playerPen.vy) > MIN_VELOCITY
     const aiMoving = Math.abs(aiPen.vx) > MIN_VELOCITY || Math.abs(aiPen.vy) > MIN_VELOCITY
     return playerMoving || aiMoving
   }
 
-  const aiTurn = useCallback(() => {
-    setGameState((prev) => {
-      if (prev.isPlayerTurn || prev.gameOver || prev.roundOver) {
-        return prev
-      }
-      
-      // AI aims at player's pen with some randomness
-      const dx = prev.playerPen.x - prev.aiPen.x
-      const dy = prev.playerPen.y - prev.aiPen.y
-      const angle = Math.atan2(dy, dx)
-      
-      // Add some randomness to make AI beatable
-      const randomAngle = angle + (Math.random() - 0.5) * 0.5
-      const power = 10 + Math.random() * 12
-      
-      const newVx = Math.cos(randomAngle) * power
-      const newVy = Math.sin(randomAngle) * power
-      
-      return {
-        ...prev,
-        aiPen: {
-          ...prev.aiPen,
-          vx: newVx,
-          vy: newVy,
-        },
-      }
+  const performAITurn = useCallback(() => {
+    const physics = physicsRef.current
+    if (physics.isPlayerTurn || physics.aiHasMoved) return
+    
+    const dx = physics.playerPen.x - physics.aiPen.x
+    const dy = physics.playerPen.y - physics.aiPen.y
+    const angle = Math.atan2(dy, dx)
+    
+    // Add some randomness to make AI beatable
+    const randomAngle = angle + (Math.random() - 0.5) * 0.5
+    const power = 10 + Math.random() * 12
+    
+    physics.aiPen.vx = Math.cos(randomAngle) * power
+    physics.aiPen.vy = Math.sin(randomAngle) * power
+    physics.waitingForPensToStop = true
+    physics.aiHasMoved = true
+  }, [])
+
+  const resetRound = useCallback(() => {
+    const pens = createInitialPens()
+    physicsRef.current = {
+      ...pens,
+      isPlayerTurn: true,
+      waitingForPensToStop: false,
+      aiHasMoved: false,
+    }
+    setUIState(prev => ({
+      ...prev,
+      isPlayerTurn: true,
+      roundOver: false,
+    }))
+  }, [])
+
+  const resetGame = useCallback(() => {
+    const pens = createInitialPens()
+    physicsRef.current = {
+      ...pens,
+      isPlayerTurn: true,
+      waitingForPensToStop: false,
+      aiHasMoved: false,
+    }
+    setUIState({
+      isPlayerTurn: true,
+      gameOver: false,
+      winner: null,
+      playerScore: 0,
+      aiScore: 0,
+      roundOver: false,
+      showInstructions: false,
     })
   }, [])
 
-  // Game loop
+  // Main game loop
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -207,105 +225,108 @@ export default function PenFightGame() {
     const ctx = canvas.getContext("2d")
     if (!ctx) return
 
+    let aiTurnTimeout: NodeJS.Timeout | null = null
+
     const gameLoop = () => {
-      setGameState((prev) => {
-        if (prev.gameOver || prev.roundOver) return prev
-
-        let newPlayerPen = { ...prev.playerPen }
-        let newAiPen = { ...prev.aiPen }
-
+      const physics = physicsRef.current
+      
+      // Don't update physics if game/round is over
+      if (!uiState.gameOver && !uiState.roundOver) {
         // Update positions
-        newPlayerPen.x += newPlayerPen.vx
-        newPlayerPen.y += newPlayerPen.vy
-        newAiPen.x += newAiPen.vx
-        newAiPen.y += newAiPen.vy
+        physics.playerPen.x += physics.playerPen.vx
+        physics.playerPen.y += physics.playerPen.vy
+        physics.aiPen.x += physics.aiPen.vx
+        physics.aiPen.y += physics.aiPen.vy
 
         // Apply friction
-        newPlayerPen.vx *= FRICTION
-        newPlayerPen.vy *= FRICTION
-        newAiPen.vx *= FRICTION
-        newAiPen.vy *= FRICTION
+        physics.playerPen.vx *= FRICTION
+        physics.playerPen.vy *= FRICTION
+        physics.aiPen.vx *= FRICTION
+        physics.aiPen.vy *= FRICTION
 
         // Update angles based on velocity
-        if (Math.abs(newPlayerPen.vx) > 0.5 || Math.abs(newPlayerPen.vy) > 0.5) {
-          newPlayerPen.angle = Math.atan2(newPlayerPen.vy, newPlayerPen.vx)
+        if (Math.abs(physics.playerPen.vx) > 0.5 || Math.abs(physics.playerPen.vy) > 0.5) {
+          physics.playerPen.angle = Math.atan2(physics.playerPen.vy, physics.playerPen.vx)
         }
-        if (Math.abs(newAiPen.vx) > 0.5 || Math.abs(newAiPen.vy) > 0.5) {
-          newAiPen.angle = Math.atan2(newAiPen.vy, newAiPen.vx)
+        if (Math.abs(physics.aiPen.vx) > 0.5 || Math.abs(physics.aiPen.vy) > 0.5) {
+          physics.aiPen.angle = Math.atan2(physics.aiPen.vy, physics.aiPen.vx)
         }
 
         // Check collision between pens
-        if (checkCollision(newPlayerPen, newAiPen)) {
-          ;[newPlayerPen, newAiPen] = resolveCollision(newPlayerPen, newAiPen)
+        if (checkCollision(physics.playerPen, physics.aiPen)) {
+          resolveCollision(physics.playerPen, physics.aiPen)
         }
 
         // Check if pens fell off table
-        const playerOnTable = isPenOnTable(newPlayerPen)
-        const aiOnTable = isPenOnTable(newAiPen)
+        const playerOnTable = isPenOnTable(physics.playerPen)
+        const aiOnTable = isPenOnTable(physics.aiPen)
 
         if (!playerOnTable || !aiOnTable) {
-          let newPlayerScore = prev.playerScore
-          let newAiScore = prev.aiScore
-          let winner: "player" | "ai" | null = null
-
           if (!playerOnTable && !aiOnTable) {
-            // Both fell - it's a draw, no score change
+            // Both fell - draw, just reset round
+            setUIState(prev => ({ ...prev, roundOver: true }))
           } else if (!playerOnTable) {
-            newAiScore++
-            if (newAiScore >= 3) {
-              winner = "ai"
-            }
+            // Player fell
+            setUIState(prev => {
+              const newAiScore = prev.aiScore + 1
+              if (newAiScore >= 3) {
+                return { ...prev, aiScore: newAiScore, gameOver: true, winner: "ai" }
+              }
+              return { ...prev, aiScore: newAiScore, roundOver: true }
+            })
           } else {
-            newPlayerScore++
-            if (newPlayerScore >= 3) {
-              winner = "player"
-            }
-          }
-
-          return {
-            ...prev,
-            playerPen: newPlayerPen,
-            aiPen: newAiPen,
-            playerScore: newPlayerScore,
-            aiScore: newAiScore,
-            roundOver: winner === null,
-            gameOver: winner !== null,
-            winner,
+            // AI fell
+            setUIState(prev => {
+              const newPlayerScore = prev.playerScore + 1
+              if (newPlayerScore >= 3) {
+                return { ...prev, playerScore: newPlayerScore, gameOver: true, winner: "player" }
+              }
+              return { ...prev, playerScore: newPlayerScore, roundOver: true }
+            })
           }
         }
 
-        // Check if pens stopped moving - switch turns
-        if (!arePensMoving(newPlayerPen, newAiPen)) {
-          newPlayerPen.vx = 0
-          newPlayerPen.vy = 0
-          newAiPen.vx = 0
-          newAiPen.vy = 0
-
-          if (!prev.isPlayerTurn) {
-            return {
-              ...prev,
-              playerPen: newPlayerPen,
-              aiPen: newAiPen,
-              isPlayerTurn: true,
-            }
+        // Check if pens stopped moving
+        const pensMoving = arePensMoving()
+        
+        if (!pensMoving && physics.waitingForPensToStop) {
+          // Stop pens completely
+          physics.playerPen.vx = 0
+          physics.playerPen.vy = 0
+          physics.aiPen.vx = 0
+          physics.aiPen.vy = 0
+          physics.waitingForPensToStop = false
+          
+          // Switch turns
+          if (physics.isPlayerTurn) {
+            // Player just finished, switch to AI
+            physics.isPlayerTurn = false
+            physics.aiHasMoved = false
+            setUIState(prev => ({ ...prev, isPlayerTurn: false }))
+            
+            // Schedule AI turn
+            if (aiTurnTimeout) clearTimeout(aiTurnTimeout)
+            aiTurnTimeout = setTimeout(() => {
+              performAITurn()
+            }, 800)
+          } else {
+            // AI just finished, switch to player
+            physics.isPlayerTurn = true
+            setUIState(prev => ({ ...prev, isPlayerTurn: true }))
           }
         }
-
-        return {
-          ...prev,
-          playerPen: newPlayerPen,
-          aiPen: newAiPen,
-        }
-      })
+      }
 
       // Draw
-      drawGame(ctx)
+      drawGame(ctx, physics, dragRef.current)
       animationRef.current = requestAnimationFrame(gameLoop)
     }
 
-    const drawGame = (ctx: CanvasRenderingContext2D) => {
-      const state = gameStateRef.current
-
+    const drawGame = (
+      ctx: CanvasRenderingContext2D, 
+      physics: GamePhysicsState,
+      drag: typeof dragRef.current
+    ) => {
       // Clear canvas
       ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
 
@@ -339,7 +360,7 @@ export default function PenFightGame() {
         ctx.stroke()
       }
 
-      // Draw table border (shadow effect)
+      // Draw table border
       ctx.strokeStyle = "#4a3728"
       ctx.lineWidth = 8
       ctx.strokeRect(TABLE_PADDING, TABLE_PADDING, CANVAS_WIDTH - TABLE_PADDING * 2, CANVAS_HEIGHT - TABLE_PADDING * 2)
@@ -352,21 +373,21 @@ export default function PenFightGame() {
       ctx.fillRect(CANVAS_WIDTH - TABLE_PADDING, 0, TABLE_PADDING, CANVAS_HEIGHT)
 
       // Draw pens
-      drawPen(ctx, state.playerPen)
-      drawPen(ctx, state.aiPen)
+      drawPen(ctx, physics.playerPen)
+      drawPen(ctx, physics.aiPen)
 
       // Draw drag indicator
-      if (state.isDragging && state.dragStart && state.dragEnd) {
-        const dx = state.dragStart.x - state.dragEnd.x
-        const dy = state.dragStart.y - state.dragEnd.y
+      if (drag.isDragging) {
+        const dx = drag.startX - drag.endX
+        const dy = drag.startY - drag.endY
         const power = Math.min(Math.sqrt(dx * dx + dy * dy), MAX_FLICK_POWER * 4)
         
         ctx.strokeStyle = `rgba(59, 130, 246, ${0.3 + power / 200})`
         ctx.lineWidth = 3
         ctx.setLineDash([5, 5])
         ctx.beginPath()
-        ctx.moveTo(state.playerPen.x, state.playerPen.y)
-        ctx.lineTo(state.playerPen.x + dx, state.playerPen.y + dy)
+        ctx.moveTo(physics.playerPen.x, physics.playerPen.y)
+        ctx.lineTo(physics.playerPen.x + dx, physics.playerPen.y + dy)
         ctx.stroke()
         ctx.setLineDash([])
 
@@ -374,7 +395,7 @@ export default function PenFightGame() {
         const normalizedPower = power / (MAX_FLICK_POWER * 4)
         ctx.fillStyle = `hsl(${120 - normalizedPower * 120}, 80%, 50%)`
         ctx.beginPath()
-        ctx.arc(state.playerPen.x + dx, state.playerPen.y + dy, 8 + normalizedPower * 8, 0, Math.PI * 2)
+        ctx.arc(physics.playerPen.x + dx, physics.playerPen.y + dy, 8 + normalizedPower * 8, 0, Math.PI * 2)
         ctx.fill()
       }
     }
@@ -383,6 +404,12 @@ export default function PenFightGame() {
       ctx.save()
       ctx.translate(pen.x, pen.y)
       ctx.rotate(pen.angle)
+
+      // Pen shadow
+      ctx.fillStyle = "rgba(0, 0, 0, 0.2)"
+      ctx.beginPath()
+      ctx.ellipse(3, 3, pen.width / 2, pen.height / 2, 0, 0, Math.PI * 2)
+      ctx.fill()
 
       // Pen body
       ctx.fillStyle = pen.color
@@ -407,7 +434,6 @@ export default function PenFightGame() {
       ctx.fill()
 
       // Pen clip on cap
-      ctx.fillStyle = "#silver"
       ctx.fillStyle = "#c0c0c0"
       ctx.fillRect(-pen.width / 2 - 12, -pen.height / 2 - 6, 3, pen.height + 8)
 
@@ -424,32 +450,11 @@ export default function PenFightGame() {
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current)
       }
-    }
-  }, []) // Empty dependency - game loop runs continuously
-
-  // AI turn trigger - use ref to track if AI has taken turn
-  const aiTurnScheduledRef = useRef(false)
-  
-  useEffect(() => {
-    // Reset scheduled flag when it becomes player's turn
-    if (gameState.isPlayerTurn) {
-      aiTurnScheduledRef.current = false
-      return
-    }
-    
-    // If it's AI's turn, not game over, not round over, and we haven't scheduled yet
-    if (!gameState.isPlayerTurn && !gameState.gameOver && !gameState.roundOver && !aiTurnScheduledRef.current) {
-      const pensMoving = arePensMoving(gameState.playerPen, gameState.aiPen)
-      
-      if (!pensMoving) {
-        aiTurnScheduledRef.current = true
-        const timeout = setTimeout(() => {
-          aiTurn()
-        }, 800)
-        return () => clearTimeout(timeout)
+      if (aiTurnTimeout) {
+        clearTimeout(aiTurnTimeout)
       }
     }
-  }, [gameState.isPlayerTurn, gameState.gameOver, gameState.roundOver, aiTurn, gameState.playerPen.vx, gameState.playerPen.vy, gameState.aiPen.vx, gameState.aiPen.vy])
+  }, [uiState.gameOver, uiState.roundOver, performAITurn])
 
   // Mouse handlers
   const getMousePos = (e: React.MouseEvent<HTMLCanvasElement>): { x: number; y: number } => {
@@ -471,60 +476,48 @@ export default function PenFightGame() {
   }
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!gameState.isPlayerTurn || gameState.gameOver || gameState.roundOver) return
-    if (arePensMoving(gameState.playerPen, gameState.aiPen)) return
+    const physics = physicsRef.current
+    if (!physics.isPlayerTurn || uiState.gameOver || uiState.roundOver) return
+    if (arePensMoving()) return
 
     const pos = getMousePos(e)
-    if (isNearPen(pos, gameState.playerPen)) {
-      setShowInstructions(false)
-      setGameState((prev) => ({
-        ...prev,
+    if (isNearPen(pos, physics.playerPen)) {
+      setUIState(prev => ({ ...prev, showInstructions: false }))
+      dragRef.current = {
         isDragging: true,
-        dragStart: pos,
-        dragEnd: pos,
-      }))
+        startX: pos.x,
+        startY: pos.y,
+        endX: pos.x,
+        endY: pos.y,
+      }
     }
   }
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!gameState.isDragging) return
+    if (!dragRef.current.isDragging) return
     const pos = getMousePos(e)
-    setGameState((prev) => ({
-      ...prev,
-      dragEnd: pos,
-    }))
+    dragRef.current.endX = pos.x
+    dragRef.current.endY = pos.y
   }
 
   const handleMouseUp = () => {
-    if (!gameState.isDragging || !gameState.dragStart || !gameState.dragEnd) return
+    const drag = dragRef.current
+    if (!drag.isDragging) return
 
-    const dx = gameState.dragStart.x - gameState.dragEnd.x
-    const dy = gameState.dragStart.y - gameState.dragEnd.y
+    const dx = drag.startX - drag.endX
+    const dy = drag.startY - drag.endY
     const distance = Math.sqrt(dx * dx + dy * dy)
     
+    drag.isDragging = false
+
     if (distance > 10) {
       const power = Math.min(distance / 4, MAX_FLICK_POWER)
       const angle = Math.atan2(dy, dx)
 
-      setGameState((prev) => ({
-        ...prev,
-        playerPen: {
-          ...prev.playerPen,
-          vx: Math.cos(angle) * power,
-          vy: Math.sin(angle) * power,
-        },
-        isDragging: false,
-        dragStart: null,
-        dragEnd: null,
-        isPlayerTurn: false,
-      }))
-    } else {
-      setGameState((prev) => ({
-        ...prev,
-        isDragging: false,
-        dragStart: null,
-        dragEnd: null,
-      }))
+      const physics = physicsRef.current
+      physics.playerPen.vx = Math.cos(angle) * power
+      physics.playerPen.vy = Math.sin(angle) * power
+      physics.waitingForPensToStop = true
     }
   }
 
@@ -534,22 +527,22 @@ export default function PenFightGame() {
       <div className="flex items-center gap-8">
         <div className="flex items-center gap-3 bg-primary/10 px-6 py-3 rounded-xl">
           <div className="w-4 h-4 rounded-full bg-primary" />
-          <span className="font-bold text-lg text-foreground">You: {gameState.playerScore}</span>
+          <span className="font-bold text-lg text-foreground">You: {uiState.playerScore}</span>
         </div>
         <div className="text-2xl font-bold text-muted-foreground">VS</div>
         <div className="flex items-center gap-3 bg-destructive/10 px-6 py-3 rounded-xl">
           <div className="w-4 h-4 rounded-full bg-destructive" />
-          <span className="font-bold text-lg text-foreground">AI: {gameState.aiScore}</span>
+          <span className="font-bold text-lg text-foreground">AI: {uiState.aiScore}</span>
         </div>
       </div>
 
       {/* Turn indicator */}
       <div className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
-        gameState.isPlayerTurn 
+        uiState.isPlayerTurn 
           ? "bg-primary text-primary-foreground" 
           : "bg-destructive text-destructive-foreground"
       }`}>
-        {gameState.isPlayerTurn ? "Your Turn - Flick your pen!" : "AI is thinking..."}
+        {uiState.isPlayerTurn ? "Your Turn - Flick your pen!" : "AI is thinking..."}
       </div>
 
       {/* Game canvas */}
@@ -567,7 +560,7 @@ export default function PenFightGame() {
         />
 
         {/* Instructions overlay */}
-        {showInstructions && (
+        {uiState.showInstructions && (
           <div className="absolute inset-0 flex items-center justify-center bg-foreground/50 rounded-2xl">
             <div className="bg-card p-6 rounded-xl text-center shadow-xl max-w-xs">
               <h3 className="text-lg font-bold text-card-foreground mb-2">How to Play</h3>
@@ -576,13 +569,15 @@ export default function PenFightGame() {
                 Push the <span className="text-destructive font-bold">red pen</span> off the table to score. 
                 First to 3 wins!
               </p>
-              <Button onClick={() => setShowInstructions(false)}>Got it!</Button>
+              <Button onClick={() => setUIState(prev => ({ ...prev, showInstructions: false }))}>
+                Got it!
+              </Button>
             </div>
           </div>
         )}
 
         {/* Round over overlay */}
-        {gameState.roundOver && !gameState.gameOver && (
+        {uiState.roundOver && !uiState.gameOver && (
           <div className="absolute inset-0 flex items-center justify-center bg-foreground/50 rounded-2xl">
             <div className="bg-card p-6 rounded-xl text-center shadow-xl">
               <h3 className="text-xl font-bold text-card-foreground mb-4">Round Over!</h3>
@@ -597,10 +592,10 @@ export default function PenFightGame() {
         )}
 
         {/* Game over overlay */}
-        {gameState.gameOver && (
+        {uiState.gameOver && (
           <div className="absolute inset-0 flex items-center justify-center bg-foreground/50 rounded-2xl">
             <div className="bg-card p-8 rounded-xl text-center shadow-xl">
-              {gameState.winner === "player" ? (
+              {uiState.winner === "player" ? (
                 <>
                   <Trophy className="w-16 h-16 text-accent mx-auto mb-4" />
                   <h3 className="text-2xl font-bold text-card-foreground mb-2">You Win!</h3>
