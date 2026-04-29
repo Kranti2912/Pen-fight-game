@@ -524,7 +524,7 @@ export default function PenFightGame() {
   return (
     <div className="flex flex-col items-center gap-6">
       {/* Score display */}
-      <div className="flex items-center gap-8">
+      <div className="flex items-center justify-between w-full gap-8">
         <div className="flex items-center gap-3 bg-primary/10 px-6 py-3 rounded-xl">
           <div className="w-4 h-4 rounded-full bg-primary" />
           <span className="font-bold text-lg text-foreground">You: {uiState.playerScore}</span>
