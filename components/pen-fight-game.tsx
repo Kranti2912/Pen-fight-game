@@ -529,7 +529,6 @@ export default function PenFightGame() {
           <div className="w-4 h-4 rounded-full bg-primary" />
           <span className="font-bold text-lg text-foreground">You: {uiState.playerScore}</span>
         </div>
-        <div className="text-2xl font-bold text-muted-foreground">VS</div>
         <div className="flex items-center gap-3 bg-destructive/10 px-6 py-3 rounded-xl">
           <div className="w-4 h-4 rounded-full bg-destructive" />
           <span className="font-bold text-lg text-foreground">AI: {uiState.aiScore}</span>
