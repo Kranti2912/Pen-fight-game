@@ -44,6 +44,12 @@ export default function PenFightGame() {
   const animationRef = useRef<number | null>(null)
   const [gameState, setGameState] = useState<GameState>(() => createInitialState())
   const [showInstructions, setShowInstructions] = useState(true)
+  const gameStateRef = useRef<GameState>(gameState)
+  
+  // Keep ref in sync with state
+  useEffect(() => {
+    gameStateRef.current = gameState
+  }, [gameState])
 
   function createInitialState(): GameState {
     return {
@@ -166,7 +172,9 @@ export default function PenFightGame() {
 
   const aiTurn = useCallback(() => {
     setGameState((prev) => {
-      if (prev.isPlayerTurn || prev.gameOver || prev.roundOver) return prev
+      if (prev.isPlayerTurn || prev.gameOver || prev.roundOver) {
+        return prev
+      }
       
       // AI aims at player's pen with some randomness
       const dx = prev.playerPen.x - prev.aiPen.x
@@ -175,14 +183,17 @@ export default function PenFightGame() {
       
       // Add some randomness to make AI beatable
       const randomAngle = angle + (Math.random() - 0.5) * 0.5
-      const power = 8 + Math.random() * 10
+      const power = 10 + Math.random() * 12
+      
+      const newVx = Math.cos(randomAngle) * power
+      const newVy = Math.sin(randomAngle) * power
       
       return {
         ...prev,
         aiPen: {
           ...prev.aiPen,
-          vx: Math.cos(randomAngle) * power,
-          vy: Math.sin(randomAngle) * power,
+          vx: newVx,
+          vy: newVy,
         },
       }
     })
@@ -293,7 +304,7 @@ export default function PenFightGame() {
     }
 
     const drawGame = (ctx: CanvasRenderingContext2D) => {
-      const state = gameState
+      const state = gameStateRef.current
 
       // Clear canvas
       ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
@@ -414,15 +425,31 @@ export default function PenFightGame() {
         cancelAnimationFrame(animationRef.current)
       }
     }
-  }, [gameState])
+  }, []) // Empty dependency - game loop runs continuously
 
-  // AI turn trigger
+  // AI turn trigger - use ref to track if AI has taken turn
+  const aiTurnScheduledRef = useRef(false)
+  
   useEffect(() => {
-    if (!gameState.isPlayerTurn && !gameState.gameOver && !gameState.roundOver && !arePensMoving(gameState.playerPen, gameState.aiPen)) {
-      const timeout = setTimeout(aiTurn, 800)
-      return () => clearTimeout(timeout)
+    // Reset scheduled flag when it becomes player's turn
+    if (gameState.isPlayerTurn) {
+      aiTurnScheduledRef.current = false
+      return
     }
-  }, [gameState.isPlayerTurn, gameState.gameOver, gameState.roundOver, aiTurn, gameState.playerPen, gameState.aiPen])
+    
+    // If it's AI's turn, not game over, not round over, and we haven't scheduled yet
+    if (!gameState.isPlayerTurn && !gameState.gameOver && !gameState.roundOver && !aiTurnScheduledRef.current) {
+      const pensMoving = arePensMoving(gameState.playerPen, gameState.aiPen)
+      
+      if (!pensMoving) {
+        aiTurnScheduledRef.current = true
+        const timeout = setTimeout(() => {
+          aiTurn()
+        }, 800)
+        return () => clearTimeout(timeout)
+      }
+    }
+  }, [gameState.isPlayerTurn, gameState.gameOver, gameState.roundOver, aiTurn, gameState.playerPen.vx, gameState.playerPen.vy, gameState.aiPen.vx, gameState.aiPen.vy])
 
   // Mouse handlers
   const getMousePos = (e: React.MouseEvent<HTMLCanvasElement>): { x: number; y: number } => {
