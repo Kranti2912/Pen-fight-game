@@ -523,25 +523,26 @@ export default function PenFightGame() {
 
   return (
     <div className="flex flex-col items-center gap-6">
-      {/* Score display */}
+      {/* Score display with status in the middle */}
       <div className="flex items-center justify-between w-full gap-8">
         <div className="flex items-center gap-3 bg-primary/10 px-6 py-3 rounded-xl">
           <div className="w-4 h-4 rounded-full bg-primary" />
           <span className="font-bold text-lg text-foreground">You: {uiState.playerScore}</span>
         </div>
+
+        {/* Turn indicator - centered between score cards */}
+        <div className={`px-4 py-2 rounded-full text-sm font-medium transition-all whitespace-nowrap ${
+          uiState.isPlayerTurn 
+            ? "bg-primary text-primary-foreground" 
+            : "bg-destructive text-destructive-foreground"
+        }`}>
+          {uiState.isPlayerTurn ? "Your Turn - Flick!" : "AI is thinking..."}
+        </div>
+
         <div className="flex items-center gap-3 bg-destructive/10 px-6 py-3 rounded-xl">
           <div className="w-4 h-4 rounded-full bg-destructive" />
           <span className="font-bold text-lg text-foreground">AI: {uiState.aiScore}</span>
         </div>
-      </div>
-
-      {/* Turn indicator */}
-      <div className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
-        uiState.isPlayerTurn 
-          ? "bg-primary text-primary-foreground" 
-          : "bg-destructive text-destructive-foreground"
-      }`}>
-        {uiState.isPlayerTurn ? "Your Turn - Flick your pen!" : "AI is thinking..."}
       </div>
 
       {/* Game canvas */}
