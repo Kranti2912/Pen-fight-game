@@ -37,7 +37,16 @@ interface GameUIState {
 const CANVAS_WIDTH = 600
 const CANVAS_HEIGHT = 600
 const TABLE_PADDING = 50
-const FRICTION = 0.98
+const SIMULATION_HZ = 60
+const SIMULATION_STEP_MS = 1000 / SIMULATION_HZ
+const MAX_FRAME_DELTA_MS = 100
+const MAX_CATCH_UP_STEPS = 6
+const TABLE_FRICTION_COEFFICIENT = 0.15
+const GRAVITY_METERS_PER_SECOND_SQUARED = 9.81
+const WORLD_PIXELS_PER_METER = 600
+const TABLE_FRICTION_PER_TICK =
+  (TABLE_FRICTION_COEFFICIENT * GRAVITY_METERS_PER_SECOND_SQUARED * WORLD_PIXELS_PER_METER) /
+  SIMULATION_HZ ** 2
 const MIN_VELOCITY = 0.1
 const MAX_FLICK_POWER = 25
 const PEN_WIDTH = 80
@@ -181,6 +190,21 @@ export default function PenFightGame() {
     }
   }
 
+  const applyTableFriction = (pen: Pen): void => {
+    const speed = Math.hypot(pen.vx, pen.vy)
+
+    if (speed <= TABLE_FRICTION_PER_TICK) {
+      pen.vx = 0
+      pen.vy = 0
+      return
+    }
+
+    const remainingSpeed = speed - TABLE_FRICTION_PER_TICK
+    const frictionScale = remainingSpeed / speed
+    pen.vx *= frictionScale
+    pen.vy *= frictionScale
+  }
+
   const arePensMoving = (): boolean => {
     const { playerPen, aiPen } = physicsRef.current
     const playerMoving = Math.abs(playerPen.vx) > MIN_VELOCITY || Math.abs(playerPen.vy) > MIN_VELOCITY
@@ -194,11 +218,14 @@ export default function PenFightGame() {
     
     const dx = physics.playerPen.x - physics.aiPen.x
     const dy = physics.playerPen.y - physics.aiPen.y
+    const distance = Math.hypot(dx, dy)
     const angle = Math.atan2(dy, dx)
     
-    // Add some randomness to make AI beatable
-    const randomAngle = angle + (Math.random() - 0.5) * 0.4
-    const power = 12 + Math.random() * 10
+    // Choose enough speed to reach the player despite table friction, with a little variation.
+    const distanceToContact = Math.max(distance - PEN_WIDTH * 0.6, 0)
+    const powerToReachContact = Math.sqrt(2 * TABLE_FRICTION_PER_TICK * distanceToContact)
+    const power = Math.min(MAX_FLICK_POWER, powerToReachContact * (1.08 + Math.random() * 0.2))
+    const randomAngle = angle + (Math.random() - 0.5) * 0.24
     
     physics.aiPen.vx = Math.cos(randomAngle) * power
     physics.aiPen.vy = Math.sin(randomAngle) * power
@@ -249,99 +276,100 @@ export default function PenFightGame() {
     if (!ctx) return
 
     let aiTurnTimeout: NodeJS.Timeout | null = null
+    let previousTimestamp: number | null = null
+    let accumulator = 0
+    let roundOutcomeHandled = false
 
-    const gameLoop = () => {
-      const physics = physicsRef.current
-      
-      // Don't update physics if game/round is over
-      if (!uiState.gameOver && !uiState.roundOver) {
-        // Update positions
-        physics.playerPen.x += physics.playerPen.vx
-        physics.playerPen.y += physics.playerPen.vy
-        physics.aiPen.x += physics.aiPen.vx
-        physics.aiPen.y += physics.aiPen.vy
+    const gameLoop = (timestamp: number) => {
+      const elapsed = previousTimestamp === null ? 0 : Math.min(timestamp - previousTimestamp, MAX_FRAME_DELTA_MS)
+      previousTimestamp = timestamp
+      accumulator = Math.min(accumulator + elapsed, SIMULATION_STEP_MS * MAX_CATCH_UP_STEPS)
 
-        // Apply friction
-        physics.playerPen.vx *= FRICTION
-        physics.playerPen.vy *= FRICTION
-        physics.aiPen.vx *= FRICTION
-        physics.aiPen.vy *= FRICTION
+      while (accumulator >= SIMULATION_STEP_MS) {
+        const physics = physicsRef.current
 
-        // Update angles based on velocity
-        if (Math.abs(physics.playerPen.vx) > 0.5 || Math.abs(physics.playerPen.vy) > 0.5) {
-          physics.playerPen.angle = Math.atan2(physics.playerPen.vy, physics.playerPen.vx)
-        }
-        if (Math.abs(physics.aiPen.vx) > 0.5 || Math.abs(physics.aiPen.vy) > 0.5) {
-          physics.aiPen.angle = Math.atan2(physics.aiPen.vy, physics.aiPen.vx)
-        }
+        if (!uiState.gameOver && !uiState.roundOver && !roundOutcomeHandled) {
+          // Velocities are pixels per fixed simulation tick.
+          physics.playerPen.x += physics.playerPen.vx
+          physics.playerPen.y += physics.playerPen.vy
+          physics.aiPen.x += physics.aiPen.vx
+          physics.aiPen.y += physics.aiPen.vy
 
-        // Check collision between pens
-        if (checkCollision(physics.playerPen, physics.aiPen)) {
-          resolveCollision(physics.playerPen, physics.aiPen)
-        }
+          // Check collision before table friction slows the pens for the next tick.
+          if (checkCollision(physics.playerPen, physics.aiPen)) {
+            resolveCollision(physics.playerPen, physics.aiPen)
+          }
 
-        // Check if pens fell off table
-        const playerOnTable = isPenOnTable(physics.playerPen)
-        const aiOnTable = isPenOnTable(physics.aiPen)
+          applyTableFriction(physics.playerPen)
+          applyTableFriction(physics.aiPen)
 
-        if (!playerOnTable || !aiOnTable) {
-          if (!playerOnTable && !aiOnTable) {
-            // Both fell - draw, just reset round
-            setUIState(prev => ({ ...prev, roundOver: true }))
-          } else if (!playerOnTable) {
-            // Player fell
-            setUIState(prev => {
-              const newAiScore = prev.aiScore + 1
-              if (newAiScore >= 3) {
-                return { ...prev, aiScore: newAiScore, gameOver: true, winner: "ai" }
-              }
-              return { ...prev, aiScore: newAiScore, roundOver: true }
-            })
-          } else {
-            // AI fell
-            setUIState(prev => {
-              const newPlayerScore = prev.playerScore + 1
-              if (newPlayerScore >= 3) {
-                return { ...prev, playerScore: newPlayerScore, gameOver: true, winner: "player" }
-              }
-              return { ...prev, playerScore: newPlayerScore, roundOver: true }
-            })
+          // Update angles based on velocity
+          if (Math.abs(physics.playerPen.vx) > 0.5 || Math.abs(physics.playerPen.vy) > 0.5) {
+            physics.playerPen.angle = Math.atan2(physics.playerPen.vy, physics.playerPen.vx)
+          }
+          if (Math.abs(physics.aiPen.vx) > 0.5 || Math.abs(physics.aiPen.vy) > 0.5) {
+            physics.aiPen.angle = Math.atan2(physics.aiPen.vy, physics.aiPen.vx)
+          }
+
+          // Check if pens fell off table
+          const playerOnTable = isPenOnTable(physics.playerPen)
+          const aiOnTable = isPenOnTable(physics.aiPen)
+
+          if (!playerOnTable || !aiOnTable) {
+            roundOutcomeHandled = true
+            accumulator = 0
+
+            if (!playerOnTable && !aiOnTable) {
+              setUIState(prev => ({ ...prev, roundOver: true }))
+            } else if (!playerOnTable) {
+              setUIState(prev => {
+                const newAiScore = prev.aiScore + 1
+                if (newAiScore >= 3) {
+                  return { ...prev, aiScore: newAiScore, gameOver: true, winner: "ai" }
+                }
+                return { ...prev, aiScore: newAiScore, roundOver: true }
+              })
+            } else {
+              setUIState(prev => {
+                const newPlayerScore = prev.playerScore + 1
+                if (newPlayerScore >= 3) {
+                  return { ...prev, playerScore: newPlayerScore, gameOver: true, winner: "player" }
+                }
+                return { ...prev, playerScore: newPlayerScore, roundOver: true }
+              })
+            }
+
+            break
+          }
+
+          // Check if pens stopped moving
+          if (!arePensMoving() && physics.waitingForPensToStop) {
+            physics.playerPen.vx = 0
+            physics.playerPen.vy = 0
+            physics.aiPen.vx = 0
+            physics.aiPen.vy = 0
+            physics.waitingForPensToStop = false
+
+            if (physics.isPlayerTurn) {
+              physics.isPlayerTurn = false
+              physics.aiHasMoved = false
+              setUIState(prev => ({ ...prev, isPlayerTurn: false }))
+
+              if (aiTurnTimeout) clearTimeout(aiTurnTimeout)
+              aiTurnTimeout = setTimeout(() => {
+                performAITurn()
+              }, 800)
+            } else {
+              physics.isPlayerTurn = true
+              setUIState(prev => ({ ...prev, isPlayerTurn: true }))
+            }
           }
         }
 
-        // Check if pens stopped moving
-        const pensMoving = arePensMoving()
-        
-        if (!pensMoving && physics.waitingForPensToStop) {
-          // Stop pens completely
-          physics.playerPen.vx = 0
-          physics.playerPen.vy = 0
-          physics.aiPen.vx = 0
-          physics.aiPen.vy = 0
-          physics.waitingForPensToStop = false
-          
-          // Switch turns
-          if (physics.isPlayerTurn) {
-            // Player just finished, switch to AI
-            physics.isPlayerTurn = false
-            physics.aiHasMoved = false
-            setUIState(prev => ({ ...prev, isPlayerTurn: false }))
-            
-            // Schedule AI turn
-            if (aiTurnTimeout) clearTimeout(aiTurnTimeout)
-            aiTurnTimeout = setTimeout(() => {
-              performAITurn()
-            }, 800)
-          } else {
-            // AI just finished, switch to player
-            physics.isPlayerTurn = true
-            setUIState(prev => ({ ...prev, isPlayerTurn: true }))
-          }
-        }
+        accumulator -= SIMULATION_STEP_MS
       }
 
-      // Draw
-      drawGame(ctx, physics, dragRef.current)
+      drawGame(ctx, physicsRef.current, dragRef.current)
       animationRef.current = requestAnimationFrame(gameLoop)
     }
 
@@ -467,7 +495,7 @@ export default function PenFightGame() {
       ctx.restore()
     }
 
-    gameLoop()
+    animationRef.current = requestAnimationFrame(gameLoop)
 
     return () => {
       if (animationRef.current) {
